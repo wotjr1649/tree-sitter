@@ -1,6 +1,7 @@
 use std::{
     ops::ControlFlow,
     sync::{
+        Arc,
         atomic::{AtomicUsize, Ordering},
         mpsc,
     },
@@ -907,6 +908,66 @@ fn test_parsing_after_editing_text_before_a_reserved_word() {
     let fresh = parser.parse(&code, None).unwrap();
     assert_eq!(fresh.root_node().to_sexp(), "(source_file (ERROR))");
     assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+}
+
+#[test]
+fn test_reusing_non_word_tokens_under_different_reserved_words() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language(
+            "reuse_non_word_with_different_reserved_words",
+        ))
+        .unwrap();
+
+    let mut code = b"if [] [] []".to_vec();
+    let mut tree = parser.parse(&code, None).unwrap();
+    perform_edit(
+        &mut tree,
+        &mut code,
+        &Edit {
+            position: 0,
+            deleted_length: 2,
+            inserted_text: b"#".to_vec(),
+        },
+    )
+    .unwrap();
+
+    // The external extra gives both states the same nonzero external lex state,
+    // so the reuse fallback for states without external tokens cannot apply.
+    let lex_calls = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&lex_calls);
+    parser.set_logger(Some(Box::new(move |_, message| {
+        if message.starts_with("lex_internal ") {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+    })));
+    let incremental = parser.parse(&code, Some(&tree)).unwrap();
+    parser.set_logger(None);
+    let fresh = parser.parse(&code, None).unwrap();
+
+    assert_eq!(
+        fresh.root_node().to_sexp(),
+        "(source_file (item) (item) (item))"
+    );
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(
+        tree.changed_ranges(&incremental).collect::<Vec<_>>(),
+        vec![Range {
+            start_byte: 0,
+            end_byte: 1,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 1),
+        }]
+    );
+    assert!(
+        tree.changed_ranges(&incremental)
+            .eq(tree.changed_ranges(&fresh))
+    );
+    // Only the replaced prefix and EOF need to be lexed again.
+    assert_eq!(lex_calls.load(Ordering::Relaxed), 2);
 }
 
 #[test]

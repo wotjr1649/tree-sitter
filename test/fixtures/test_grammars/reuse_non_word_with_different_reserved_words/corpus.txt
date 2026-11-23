@@ -1,0 +1,13 @@
+==================
+Items with the global reserved word set
+==================
+if [] [] []
+---
+(source_file (item) (item) (item))
+
+==================
+Items with an empty reserved word set
+==================
+# [] [] []
+---
+(source_file (item) (item) (item))
